@@ -1,0 +1,9 @@
+services:
+  vote:
+    image: eks-vote:local
+
+  result:
+    image: eks-result:local
+
+  worker:
+    image: eks-worker:local
