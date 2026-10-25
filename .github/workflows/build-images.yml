@@ -41,3 +41,65 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/eks-${{ matrix.component }}:${{ github.sha }}
+
+  deploy:
+    name: Deploy to EKS
+    needs: build
+    if: github.repository == 'shadishirazi68/eks-voting-app' && github.ref == 'refs/heads/eks-deployment'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: deploy-eks-shadi-voting-app
+      cancel-in-progress: false
+    env:
+      AWS_REGION: us-east-1
+      EKS_CLUSTER: eks-shadi
+      IMAGE_TAG: ${{ github.sha }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - name: Log in to AWS using OIDC
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: "686699774218"
+          role-session-name: GitHubActions-${{ github.run_id }}
+          action-timeout-s: 120
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v5.2.0
+        with:
+          version: v1.36.5
+
+      - name: Connect to EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name "$EKS_CLUSTER" \
+            --region "$AWS_REGION" \
+            --alias eks-shadi
+
+      - name: Check deployment permissions
+        run: |
+          for component in vote result worker; do
+            kubectl --context eks-shadi auth can-i patch "deployment/$component" \
+              --namespace voting-app --quiet
+          done
+
+      - name: Update application images
+        run: |
+          for component in vote result worker; do
+            kubectl --context eks-shadi set image "deployment/$component" \
+              "$component=$DOCKERHUB_USERNAME/eks-$component:$IMAGE_TAG" \
+              --namespace voting-app
+          done
+
+      - name: Wait for application rollout
+        run: |
+          for component in vote result worker; do
+            kubectl --context eks-shadi rollout status "deployment/$component" \
+              --namespace voting-app --timeout=180s
+          done
+          kubectl --context eks-shadi get deployments,pods --namespace voting-app
