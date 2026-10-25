@@ -1,0 +1,15 @@
+controller:
+  replicaCount: 1
+
+  ingressClass:
+    name: nginx
+    create: true
+    setAsDefaultIngress: false
+
+  service:
+    type: LoadBalancer
+    loadBalancerClass: service.k8s.aws/nlb
+    externalTrafficPolicy: Cluster
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
