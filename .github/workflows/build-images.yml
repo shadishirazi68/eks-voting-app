@@ -1,4 +1,4 @@
-name: Build and push Docker images
+name: Build and deploy voting app
 
 on:
   push:
@@ -47,7 +47,7 @@ jobs:
     needs: build
     if: github.repository == 'shadishirazi68/eks-voting-app' && github.ref == 'refs/heads/eks-deployment'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
@@ -60,6 +60,11 @@ jobs:
       IMAGE_TAG: ${{ github.sha }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
+      - name: Check out deployment manifests
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
       - name: Log in to AWS using OIDC
         uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
@@ -81,24 +86,37 @@ jobs:
             --region "$AWS_REGION" \
             --alias eks-shadi
 
-      - name: Check deployment permissions
+      - name: Render Kubernetes manifests
         run: |
-          for component in vote result worker; do
-            kubectl --context eks-shadi auth can-i patch "deployment/$component" \
-              --namespace voting-app --quiet
-          done
+          mkdir -p "$RUNNER_TEMP/voting-manifests"
+          cp k8s/*.yaml "$RUNNER_TEMP/voting-manifests/"
+          cat >> "$RUNNER_TEMP/voting-manifests/kustomization.yaml" <<EOF
+          images:
+            - name: shadshad/eks-vote
+              newName: $DOCKERHUB_USERNAME/eks-vote
+              newTag: "$IMAGE_TAG"
+            - name: shadshad/eks-result
+              newName: $DOCKERHUB_USERNAME/eks-result
+              newTag: "$IMAGE_TAG"
+            - name: shadshad/eks-worker
+              newName: $DOCKERHUB_USERNAME/eks-worker
+              newTag: "$IMAGE_TAG"
+          EOF
+          kubectl kustomize "$RUNNER_TEMP/voting-manifests" > "$RUNNER_TEMP/voting-app.yaml"
 
-      - name: Update application images
+      - name: Validate Kubernetes manifests
         run: |
-          for component in vote result worker; do
-            kubectl --context eks-shadi set image "deployment/$component" \
-              "$component=$DOCKERHUB_USERNAME/eks-$component:$IMAGE_TAG" \
-              --namespace voting-app
-          done
+          kubectl --context eks-shadi apply --dry-run=server \
+            --namespace voting-app --filename "$RUNNER_TEMP/voting-app.yaml"
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl --context eks-shadi apply \
+            --namespace voting-app --filename "$RUNNER_TEMP/voting-app.yaml"
 
       - name: Wait for application rollout
         run: |
-          for component in vote result worker; do
+          for component in redis db vote result worker; do
             kubectl --context eks-shadi rollout status "deployment/$component" \
               --namespace voting-app --timeout=180s
           done
